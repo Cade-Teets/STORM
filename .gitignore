@@ -1,0 +1,20 @@
+# Ignore local database file
+*.db
+
+# Ignore virtual environments
+venv/
+.venv/
+__pycache__/
+.DS_Store
+
+# Ignore environment variable files
+*.env
+
+# Ignore document files
+*.pdf
+
+# Ignore data ingestion log
+ingest_engine.log
+
+# Ignore example NOAA solar data file
+daily-solar-indices.txt
