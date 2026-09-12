@@ -10,7 +10,7 @@ the data-engineering foundation (Phase 1) for a Space Force / Air Force
 Prerequisites (MacOS/Linux):
     python3 -m pip install -r requirements.txt
 Usage:
-    python space_track_collector.py --norad 25544 --output-db satellite_data.db
+    python space_track_collector.py --norad 25544 --db satellite_data.db
 """
 
 import os
@@ -23,6 +23,10 @@ from typing import Dict, Any, List
 import requests
 import pandas as pd
 from dotenv import load_dotenv
+import datetime
+import time
+from pathlib import Path
+import json
 
 load_dotenv() # This automatically pulls the variables into the script
 
@@ -37,6 +41,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SpaceTrackIngest")
 
+class RateLimiter:
+    """Enforces Space-Track's general throttle (30/min, 300/hour)
+    AND tracks per-object gp_history bulk-pull history so it's never repeated."""
+
+    def __init__(self, state_file: str = "api_call_log.json"):
+        self.state_file = Path(state_file)
+        self.call_timestamps = []
+        self.bulk_history_pulled = set()  # norad_ids already fully backfilled
+        self._load_state()
+
+    def _load_state(self):
+        if self.state_file.exists():
+            data = json.loads(self.state_file.read_text())
+            self.call_timestamps = data.get("call_timestamps", [])
+            self.bulk_history_pulled = set(data.get("bulk_history_pulled", []))
+
+    def _save_state(self):
+        self.state_file.write_text(json.dumps({
+            "call_timestamps": self.call_timestamps,
+            "bulk_history_pulled": list(self.bulk_history_pulled),
+        }))
+
+    def wait_if_needed(self):
+        now = time.time()
+        # Drop timestamps older than 1 hour
+        self.call_timestamps = [t for t in self.call_timestamps if now - t < 3600]
+
+        last_minute = [t for t in self.call_timestamps if now - t < 60]
+        if len(last_minute) >= 25:  # buffer under the 30/min cap
+            time.sleep(60 - (now - last_minute[0]))
+
+        if len(self.call_timestamps) >= 250:  # buffer under the 300/hour cap
+            sleep_time = 3600 - (now - self.call_timestamps[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    def record_call(self):
+        self.call_timestamps.append(time.time())
+        self._save_state()
+
+    def already_bulk_pulled(self, norad_id: int) -> bool:
+        return norad_id in self.bulk_history_pulled
+
+    def mark_bulk_pulled(self, norad_id: int):
+        self.bulk_history_pulled.add(norad_id)
+        self._save_state()
 
 class SpaceTrackCollector:
     """Handles secure session-based connections to Space-Track.org with built-in caching."""
@@ -45,15 +95,14 @@ class SpaceTrackCollector:
     LOGIN_URL = f"{BASE_URL}/ajaxauth/login"
     QUERY_URL = f"{BASE_URL}/basicspacedata/query"
     
-    def __init__(self, identity: str, password: str, db_path: str = "satellite_data.db"):
+    def __init__(self, identity: str, password: str, db_path: str = "satellite_data.db", rate_limiter: RateLimiter = None):
         self.identity = identity
         self.password = password
         self.db_path = db_path
         self.session = requests.Session()
         self.is_authenticated = False
-        
-        # Initialize local storage database
-        self._init_db()
+        self.rate_limiter = rate_limiter or RateLimiter()
+        self._init_db() # Initialize local storage database
 
     def _init_db(self):
         """Creates the local database schema if it does not exist."""
@@ -83,7 +132,6 @@ class SpaceTrackCollector:
                 )
             """)
             conn.commit()
-            conn.close()
             logger.debug("Database initialized successfully.")
 
     def authenticate(self) -> bool:
@@ -112,7 +160,7 @@ class SpaceTrackCollector:
             self.is_authenticated = False
             return False
 
-    def fetch_gp_history(self, norad_id: int, limit: int = 2000) -> List[Dict[str, Any]]:
+    def fetch_gp_history(self, norad_id: int, limit: int = 2000, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
         """
         Queries the gp_history API class for an object's full historical orbit records.
         Using JSON format to ensure long-term stability and support for Catalog IDs > 99,999.
@@ -124,21 +172,22 @@ class SpaceTrackCollector:
         logger.info(f"Querying historical orbit trajectory for NORAD ID: {norad_id}...")
         
         # Build REST-compliant query path
-        # Sorting by epoch ascending allows us to construct a proper forward time-series
-        query_path = (
-            f"/class/gp_history"
-            f"/norad_cat_id/{norad_id}"
-            f"/orderby/epoch%20asc"
-            f"/limit/{limit}"
-            f"/format/json"
-        )
+        # Sorting by epoch descending to get the time-series back from its last position
+        query_path = f"/class/gp_history/norad_cat_id/{norad_id}"
+        if start_date and end_date:
+            query_path += f"/EPOCH/{start_date}--{end_date}"
+            logger.info(f"Restricting query to EPOCH range: {start_date} to {end_date}")
+        query_path += f"/orderby/epoch%20desc/limit/{limit}/format/json"
         full_url = f"{self.QUERY_URL}{query_path}"
         
         # Polite delay to honor API throttling guidelines
         time.sleep(1.0)
         
         try:
+            self.rate_limiter.wait_if_needed() # sleeps if near rate limit
+            
             response = self.session.get(full_url, timeout=30)
+            self.rate_limiter.record_call()
             
             if response.status_code == 204:
                 logger.warning(f"No records found for NORAD ID {norad_id}.")
@@ -201,20 +250,35 @@ class SpaceTrackCollector:
         return inserted_count
 
 
-def check_local_cache(norad_id: int, db_path: str) -> bool:
-    """Verifies if we already have sufficient historical data cached locally."""
-    if not os.path.exists(db_path):
-        return False
+# def check_local_cache(norad_id: int, db_path: str, start_date: str, end_date: str) -> bool:
+#     """Verifies if we already have sufficient historical data cached locally."""
+#     if not os.path.exists(db_path):
+#         return False
         
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM gp_history WHERE norad_cat_id = ?", (norad_id,))
-        count = cursor.fetchone()[0]
-        
-    if count > 0:
-        logger.info(f"Cache Hit: Found {count} records locally in SQLite database. Skipping active API fetch.")
-        return True
-    return False
+#     with sqlite3.connect(db_path) as conn:
+#         cursor = conn.cursor()
+#         if start_date and end_date is not None:
+#             cursor.execute("""
+#                 SELECT MIN(epoch), MAX(epoch), COUNT(*) 
+#                 FROM gp_history
+#                 WHERE norad_cat_id = ?
+#                     AND date(epoch) BETWEEN date(?) AND date(?)
+#             """, (norad_id, start_date, end_date))
+#         min_epoch, max_epoch, count = cursor.fetchone()
+    
+#     if not count:
+#         return False
+    
+#     requested_span_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+#     covered_span_days = (pd.to_datetime(max_epoch) - pd.to_datetime(min_epoch)).days if min_epoch else 0
+
+#     if requested_span_days > 0 and covered_span_days >= requested_span_days * 0.9:
+#         logger.info(f"Cache Hit: {count} records covering {min_epoch} to {max_epoch} satisfy the window. Skipping API fetch.")
+#         return True
+    
+#     logger.info(f"Cache Miss: only {count} records covering {min_epoch} to {max_epoch}, insuficcient for {start_date} to {end_date}")
+    
+#     return False
 
 
 def main():
@@ -222,15 +286,26 @@ def main():
     parser.add_argument("--norad", type=int, default=25544, help="NORAD Catalog ID (default: 25544 - ISS)")
     parser.add_argument("--db", type=str, default="satellite_data.db", help="Path to local SQLite database")
     parser.add_argument("--limit", type=int, default=1000, help="Max records to pull from Space-Track API")
-    
+    parser.add_argument("--since-days", type=int, default=1, help="Check for records created in the last N days")
+
     args = parser.parse_args()
     
-    # 1. Check local cache first to protect API limits
-    if check_local_cache(args.norad, args.db):
-        logger.info("Local caching operational. Pipeline ending cleanly.")
-        sys.exit(0)
-        
-    # 2. Extract Credentials
+    # If start and end data are not specified
+    # if not args.start_date or not args.end_date:
+    #     end = pd.Timestamp.now(datetime.timezone.utc).normalize()
+    #     start = end - pd.Timedelta(days=30)
+    #     args.start_date = args.start_date or start.strftime("%Y-%m-%d")
+    #     args.end_date = args.end_date or end.strftime("%Y-%m-%d")
+    #     logger.info(f"No explicit date range given, defaulting to {args.start_date} -> {args.end_date}")
+
+    # Check local cache first to protect API limits
+    # if check_local_cache(args.norad, args.db, args.start_date, args.end_date):
+    #     logger.info("Local caching operational. Pipeline ending cleanly.")
+    #     sys.exit(0)
+    
+    since_date = (pd.Timestamp.now(datetime.timezone.utc) - pd.Timedelta(days=args.since_days)).strftime("%Y-%m-%d")
+
+    # Extract credentials
     username = os.getenv("SPACETRACK_USER")
     password = os.getenv("SPACETRACK_PASS")
     
@@ -245,19 +320,23 @@ def main():
         logger.critical("Missing credentials. Ingestion terminated.")
         sys.exit(1)
         
-    # 3. Initialize Ingestion Engine
-    collector = SpaceTrackCollector(identity=username, password=password, db_path=args.db)
+    # Initialize Ingestion Engine
+    rate_limiter = RateLimiter()
+    collector = SpaceTrackCollector(identity=username, password=password, db_path=args.db, rate_limiter=rate_limiter)
     
-    # 4. Fetch and Store
+    # Fetch and store TLE's
     try:
-        raw_records = collector.fetch_gp_history(norad_id=args.norad, limit=args.limit)
+        raw_records = collector.fetch_gp_history(norad_id=args.norad, since_date=since_date)
         new_insertions = collector.save_records_to_db(raw_records)
         
         # Verify success by loading a subset into Pandas
-        if new_insertions > 0 or check_local_cache(args.norad, args.db):
+        if new_insertions > 0:
             with sqlite3.connect(args.db) as conn:
                 df = pd.read_sql_query(
-                    "SELECT epoch, mean_motion, bstar FROM gp_history WHERE norad_cat_id = ? ORDER BY epoch ASC LIMIT 5",
+                    """SELECT epoch, mean_motion, bstar
+                    FROM gp_history
+                    WHERE norad_cat_id = ?
+                    ORDER BY epoch DESC LIMIT 5""",
                     conn,
                     params=(args.norad,)
                 )
@@ -270,7 +349,6 @@ def main():
     except Exception as e:
         logger.critical(f"ETL pipeline execution failed: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

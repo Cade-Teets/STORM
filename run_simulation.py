@@ -1,13 +1,21 @@
-from sat_physics import calculate_atmospheric_density, calc_altitude, calculate_drag_deceleration
+from sat_physics import calculate_atmospheric_density, calc_altitude, calculate_daily_altitude_drop
 from solar_forecaster import SolarForecaster
 from sgp4.api import Satrec, jday
 import sqlite3
 import logging
 import argparse
 import random
+from datetime import timedelta
+import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
+
+# Centralized database of physical properties for target assets
+ASSET_DB = {
+    25544: {"name": "ISS", "mass": 420000.0, "area": 2500.0, "cd": 2.2},
+    37820: {"name": "Tiangong-1", "mass": 8500.0, "area": 15.0, "cd": 2.2}
+}
 
 class OrbitalDecaySimulator:
     def __init__(self, db_path: str = "satellite_data.db"):
@@ -40,9 +48,16 @@ class OrbitalDecaySimulator:
         """Runs N independent stochastic simulations to map a distribution of re-entry dates."""
         logger.info(f"Initializing Monte Carlo Engine with N = {num_runs} iterations...")
         
+        # 1. Lookup satellite physical properties
+        if norad_id not in ASSET_DB:
+            raise ValueError(f"NORAD ID {norad_id} not found in ASSET_DB configuration.")
+        cd = ASSET_DB[norad_id]["cd"]
+        area = ASSET_DB[norad_id]["area"]
+        mass = ASSET_DB[norad_id]["mass"]
+        
         # 1. Load starting TLE and weather forecasting data once
         line1, line2, epoch_str, object_name = self.get_latest_tle(norad_id)
-        history = self.forecaster.load_historical_flux()
+        history = self.forecaster.load_historical_flux(cutoff_date=str(epoch_str)[:10])
         mean_forecast, stderr_forecast = self.forecaster.generate_30_day_forecast(history)
         
         reentry_days = []
@@ -54,6 +69,7 @@ class OrbitalDecaySimulator:
             jd, fr = satellite.jdsatepoch, satellite.jdsatepochF
             dynamic_density = 2.41e-11 
             
+            accumulated_altitude_loss = 0.0
             reentered = False
             
             # Internal daily loop
@@ -61,13 +77,16 @@ class OrbitalDecaySimulator:
                 fr_step = fr + day
                 error_code, position, velocity = satellite.sgp4(jd, fr_step)
                 if error_code != 0:
+                    # SGP4 natively detected atmospheric decay
+                    reentry_days.append(day)
+                    reentered = True
                     break
                 
-                if day > 0:
-                    adjusted_v = calculate_drag_deceleration(velocity, dynamic_density, satellite.bstar)
-                    velocity = adjusted_v
+                # Get SGP4's baseline altitude
+                baseline_alt = calc_altitude(position)
                 
-                altitude = calc_altitude(position)
+                # Apply weather drag penalty
+                altitude = baseline_alt - accumulated_altitude_loss
                 
                 # Hard crash check
                 if altitude < 120.0:
@@ -83,6 +102,10 @@ class OrbitalDecaySimulator:
                 base_density = calculate_atmospheric_density(altitude)
                 dynamic_density = base_density * (simulated_f107 / 100.0)
             
+                # Calculate today's altitude penalty and add it to the accumulator
+                daily_drop = calculate_daily_altitude_drop(velocity, dynamic_density, cd, area, mass, altitude)
+                accumulated_altitude_loss += daily_drop
+
             # If the satellite didn't crash within the window, record that it survived
             if not reentered:
                 reentry_days.append(sim_days)
@@ -92,6 +115,8 @@ class OrbitalDecaySimulator:
 
         # 3. Process the aggregate results
         self.print_monte_carlo_analytics(reentry_days)
+        
+        return reentry_days
 
     def print_monte_carlo_analytics(self, results: list):
         """Calculates and prints summary statistics for the Monte Carlo run."""
@@ -120,6 +145,13 @@ class OrbitalDecaySimulator:
 
     def run(self, norad_id: int = 25544, mode: str = "deterministic", sim_days: int = 30):
         """Runs the forward-stepping decay simulation loop."""
+        
+        # Lookup satellite physical properties
+        if norad_id not in ASSET_DB:
+            raise ValueError(f"NORAD ID {norad_id} not found in ASSET_DB configuration.")
+        cd = ASSET_DB[norad_id]["cd"]
+        area = ASSET_DB[norad_id]["area"]
+        mass = ASSET_DB[norad_id]["mass"]
 
         line1, line2, epoch_str, object_name = self.get_latest_tle(norad_id)
         satellite = Satrec.twoline2rv(line1, line2)
@@ -127,12 +159,15 @@ class OrbitalDecaySimulator:
         original_bstar = satellite.bstar
         culmulative_drag_effect = 0.0
         dynamic_density = 2.41e-11
+        accumulated_altitude_loss = 0.0
 
         # Load weather history and train the ARIMA model
-        history = self.forecaster.load_historical_flux()
+        history = self.forecaster.load_historical_flux(cutoff_date=str(epoch_str)[:10])
         mean_forecast, stderr_forecast = self.forecaster.generate_30_day_forecast(history)
 
         logger.info(f"Starting {mode.upper()} simulation from initial epoch: {epoch_str}")
+
+        sim_start_date = pd.to_datetime(epoch_str)
 
         # Extract initial SGP4 time components
         jd, fr = satellite.jdsatepoch, satellite.jdsatepochF
@@ -141,7 +176,6 @@ class OrbitalDecaySimulator:
         # 2. Daily stepping loop
         for day in range(min(sim_days, len(mean_forecast))):
             
-                
             # Step time forward by exactly 1 day (1440 minutes)
             fr_step = fr + day
             
@@ -151,14 +185,10 @@ class OrbitalDecaySimulator:
                 logger.error(f"SGP4 Propagation error on day {day}: code {error_code}")
                 break
             
-            # If we aren't on Day 0, adjust velocity using our previous step's drag metrics
-            if day > 0:
-                adjusted_v = calculate_drag_deceleration(velocity, dynamic_density, original_bstar)
-                velocity = adjusted_v # Update working velocity vector
-            
             # Calculate Altitude
-            altitude = calc_altitude(position)
-            
+            base_altitude = calc_altitude(position)
+            altitude = base_altitude - accumulated_altitude_loss
+
             # 3. Determine Solar Flux Value based on operational mode
             base_f107 = mean_forecast.iloc[day]
             stderr = stderr_forecast.iloc[day]
@@ -173,10 +203,15 @@ class OrbitalDecaySimulator:
             base_density = calculate_atmospheric_density(altitude)
             # Scale density dynamically based on the forecast flux metric
             dynamic_density = base_density * (simulated_f107 / 100.0)
+
+            # Calculate the altit
+            daily_drop = calculate_daily_altitude_drop(velocity, dynamic_density, cd, area, mass, altitude)
+            accumulated_altitude_loss += daily_drop
             
             # Print status log
-            target_date = mean_forecast.index[day].strftime('%Y-%m-%d')
-            print(f"Day {day:2d} ({target_date}) | Alt: {altitude:6.2f} km | F10.7: {simulated_f107:6.2f} sfu | Density: {dynamic_density:.3e} kg/m^3")
+            target_date = (sim_start_date + timedelta(days=day)).strftime('%Y-%m-%d')
+            print(f"Day {day:2d} ({target_date}) | Alt: {altitude:6.2f} km | Daily Drop: {daily_drop*1000:7.2f} m | "
+                f"F10.7: {simulated_f107:6.2f} sfu | Density: {dynamic_density:.3e} kg/m^3")
             
             # Crash threshold condition
             if altitude < 120.0:
@@ -219,7 +254,15 @@ if __name__ == "__main__":
     # You can toggle between "deterministic" and "stochastic" here
     if args.mode == "stochastic":
         # Pass it to the multiple-run Monte Carlo machine
-        simulator.run_monte_carlo(norad_id=args.id, num_runs=100, sim_days=args.days)
+        simulator.run_monte_carlo(
+            norad_id=args.id, 
+            num_runs=100, 
+            sim_days=args.days
+        )
     else:
         # Run our single clean baseline run
-        simulator.run(norad_id=args.id, mode="deterministic", sim_days=args.days)
+        simulator.run(
+            norad_id=args.id, 
+            mode="deterministic", 
+            sim_days=args.days
+        )

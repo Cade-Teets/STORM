@@ -39,3 +39,18 @@ cd satellite-tracking-orbital-risk-model
 python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
+
+### 2. Running the CLI Simulation Engine
+STORM can be run directly from the terminal. The engine relies on an internal `ASSET_DB` dictionary inside `run_simulation.py` to securely look up specific spacecraft physical properties (Mass, Area, $C_D$) based on their NORAD ID.
+
+To run a clean deterministic baseline (using the mean solar forecast):
+```bash
+python run_simulation.py --id 25544 --mode deterministic --days 30
+```
+
+To run a full stochastic Monte Carlo decay analysis:
+```bash
+python run_simulation.py --id 37820 --mode stochastic --days 60
+```
+*(Note: To simulate a new asset, add its physical parameters to the `ASSET_DB` dictionary first).*

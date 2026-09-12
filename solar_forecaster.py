@@ -6,13 +6,21 @@ class SolarForecaster:
     def __init__(self, db_path: str = "satellite_data.db"):
         self.db_path = db_path
 
-    def load_historical_flux(self) -> pd.Series:
-        """Pulls historical F10.7 data from the DB and sets up a Pandas time-series."""
+    def load_historical_flux(self, cutoff_date: str = None) -> pd.Series:
+        """Pulls historical F10.7 data from the DB and sets up a Pandas time-series.
+            If cutoff_date is given, only data on or before that date is used.
+        """
         conn = sqlite3.connect(self.db_path)
 
         # Query data sorted chronologically
-        query = "SELECT date, radio_flux FROM weather_history ORDER BY date ASC"
-        df = pd.read_sql_query(query, conn)
+        # Add cutoff date to query if provided
+        if cutoff_date:
+            query = "SELECT date, radio_flux FROM weather_history WHERE date >= ? ORDER BY date ASC"
+            df = pd.read_sql_query(query, conn, params=(cutoff_date,)) 
+        else:
+            query = "SELECT date, radio_flux FROM weather_history ORDER BY date ASC"
+            df = pd.read_sql_query(query, conn)
+        
         conn.close()
 
         # Convert date column to datetime objects and set it as the index
@@ -22,7 +30,7 @@ class SolarForecaster:
         # Ensure regular daily frequency
         df = df.asfreq('D')
 
-        # Clean any gaps using a forward-fill strategy
+        # Clean any gaps using a forward-fill imputation
         df['radio_flux'] = df['radio_flux'].ffill()
         
         return df['radio_flux']

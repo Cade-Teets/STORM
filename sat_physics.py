@@ -1,10 +1,11 @@
 import sqlite3
 from sgp4.api import Satrec
 import math
-from typing import Tuple
+
+MU = 398600.4418          # Earth's standard gravitational parameter km^3/s^2
+EARTH_RADIUS = 6371.0      # km
 
 """Take in TLE Data from Space-Track and output (X,Y,Z) coords"""
-
 def calc_altitude(position: list[float]) -> float:
     equatorial_radius = 6378.137
     polar_radius = 6356.752
@@ -16,6 +17,12 @@ def calc_altitude(position: list[float]) -> float:
     local_earth_radius = equatorial_radius - (equatorial_radius - polar_radius) * (direction_z**2)
 
     return total_radius - local_earth_radius
+
+def altitude_from_tle(satellite) -> float:
+    n_rad_per_sec = satellite.no_kozai / 60.0 # sgp4 stores mean motion in rad/min
+    a = (MU / (n_rad_per_sec ** 2)) ** (1/3) # semi-major axis, km
+
+    return a - EARTH_RADIUS 
 
 def calculate_atmospheric_density(altitude_km: float) -> float:
     """
@@ -36,51 +43,48 @@ def calculate_atmospheric_density(altitude_km: float) -> float:
     
     return density
 
-def calculate_drag_deceleration(
-    velocity: Tuple[float, float, float], 
+import math
+
+def calculate_daily_altitude_drop(
+    velocity: tuple[float, float, float], 
     dynamic_density: float, 
-    bstar: float
-) -> Tuple[float, float, float]:
+    cd: float,
+    area: float,
+    mass: float,
+    current_alt: float
+) -> float:
     """
-    Calculates the new velocity vector after applying 1 day of atmospheric drag
-    using the first-principles drag equation: a_D = -0.5 * rho * (Cd*A/m) * v^2
-    
-    Inputs:
-        velocity: (vx, vy, vz) tuple from SGP4 in km/s
-        dynamic_density: weather-scaled atmospheric density in kg/m^3
-        bstar: the satellite's baseline B* drag term from the TLE
-    Outputs:
-        (new_vx, new_vy, new_vz) adjusted velocity vector components in km/s
+    Calculates the orbital decay (altitude drop in km) over 1 day 
+    caused by atmospheric drag using true physical properties.
     """
-    # 1. Calculate velocity magnitude (speed) in km/s
+    # Calculate velocity magnitude (speed) in km/s
     v_mag_kms = math.sqrt(velocity[0]**2 + velocity[1]**2 + velocity[2]**2)
     if v_mag_kms == 0:
-        return velocity
-        
-    # Convert to m/s for standard SI units compatibility
+        return 0.0
+    
+    # Convert velocity to m/s for drag force calculation
     v_mag_ms = v_mag_kms * 1000.0
     
-    # 2. Extract the area-to-mass ratio from BSTAR (Cd*A/m = 2 * B*)
-    drag_term = 2.0 * bstar
+    # Calculate true ballistic coefficient (B = Cd * A / m)
+    # Area in m^2, Mass in kg, Cd is dimensionless
+    ballistic_factor = (cd * area) / mass
     
-    # 3. Compute acceleration magnitude (m/s^2)
-    acceleration_drag = 0.5 * dynamic_density * drag_term * (v_mag_ms**2)
+    # Calculate drag acceleration in m/s^2
+    # a_drag = 0.5 * rho * B * v^2
+    a_drag_ms2 = 0.5 * dynamic_density * ballistic_factor * (v_mag_ms**2)
     
-    # Convert acceleration back to km/s^2 to match SGP4 coordinate space
-    a_drag_kms2 = acceleration_drag / 1000.0
+    # Convert acceleration back to km/s^2 for orbital mechanics compatibility
+    a_drag_kms2 = a_drag_ms2 / 1000.0
     
-    # 4. Determine unit direction vector of travel (drag acts in direct opposition)
-    v_unit = [v / v_mag_kms for v in velocity]
+    # Total velocity lost in one day (86,400 seconds)
+    delta_v_kms = a_drag_kms2 * 86400.0
     
-    # Calculate delta velocity lost over a 1-day step (86,400 seconds)
-    delta_v = a_drag_kms2 * 86400.0
+    # Translate velocity loss directly to altitude loss
+    orbital_radius = current_alt + EARTH_RADIUS
     
-    # Apply deceleration vector components
-    new_vx = velocity[0] - (v_unit[0] * delta_v)
-    new_vy = velocity[1] - (v_unit[1] * delta_v)
-    new_vz = velocity[2] - (v_unit[2] * delta_v)
+    alt_drop_km = (2.0 * (orbital_radius**2) * v_mag_kms * delta_v_kms) / MU
     
-    return new_vx, new_vy, new_vz
+    return alt_drop_km
 
     
 
