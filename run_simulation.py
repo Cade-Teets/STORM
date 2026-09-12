@@ -114,19 +114,20 @@ class OrbitalDecaySimulator:
                 logger.info(f"Completed run {run}/{num_runs}...")
 
         # 3. Process the aggregate results
-        self.print_monte_carlo_analytics(reentry_days)
+        self.print_monte_carlo_analytics(reentry_days, sim_days, norad_id, object_name)
         
         return reentry_days
 
-    def print_monte_carlo_analytics(self, results: list):
+    def print_monte_carlo_analytics(self, results: list, sim_days: int, norad_id: int, sat_name: str):
         """Calculates and prints summary statistics for the Monte Carlo run."""
         total_runs = len(results)
-        survived_count = results.count(max(results)) # Survived full timeline
-        crashed_runs = [r for r in results if r < max(results)]
+        survived_count = results.count(sim_days) # Survived full timeline
+        crashed_runs = [r for r in results if r < sim_days]
         
         print("\n" + "="*40)
         print("MONTE CARLO SIMULATION SUMMARY")
         print("="*40)
+        print(f"Asset:                       {sat_name} (NORAD: {norad_id})")
         print(f"Total Operational Paths Evaluated: {total_runs}")
         
         if crashed_runs:
@@ -137,7 +138,7 @@ class OrbitalDecaySimulator:
             print(f"Latest Re-entry Observed:    Day {max_decay}")
             print(f"Average Lifetime (Crashed):  Day {avg_decay:.1f}")
         else:
-            print("All iterations safely completed the tracking timeline without re-entry.")
+            print(f"All iterations safely completed the {sim_days}-day tracking timeline without re-entry.")
             
         survival_rate = (survived_count / total_runs) * 100
         print(f"Asset Survival Probability:  {survival_rate:.1f}%")

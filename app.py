@@ -32,7 +32,6 @@ if st.button("Execute Stochastic Mission Analysis"):
     with st.spinner("Running Monte Carlo physics steps across predictive distributions..."):
         
         # Run simulation backend (modify your runner to return raw array data)
-        # For showcase, let's assume we modify the runner to return the array list
         history = simulator.forecaster.load_historical_flux()
         mean_f107, stderr_f107 = simulator.forecaster.generate_30_day_forecast(history)
         
@@ -47,18 +46,36 @@ if st.button("Execute Stochastic Mission Analysis"):
                 'Upper Bound': mean_f107 + (1.96 * stderr_f107),
                 'Lower Bound': mean_f107 - (1.96 * stderr_f107)
             })
-            st.line_chart(chart_data)
+            st.line_chart(
+                chart_data, 
+                x_label="Forecast Date", 
+                y_label="F10.7 Solar Flux (sfu)"
+            )
             st.caption("ARIMA(1,1,1) Projections with a 95% confidence interval block.")
 
         with col2:
             st.subheader("Operational Risk Distribution")
-            # Mocking the statistical array display for the UI shell
-            st.metric(label="Asset Survival Probability", value="100.0%")
-            st.metric(label="Mean Orbital Frequency Delta", value="+1.42e-6 rad/s")
+            
+            # Run the actual Monte Carlo engine to get real statistical data
+            results = simulator.run_monte_carlo(norad_id=target_id, num_runs=mc_runs, sim_days=sim_days)
+            
+            # Calculate real summary metrics
+            survived_count = results.count(sim_days)
+            survival_rate = (survived_count / len(results)) * 100
+            
+            crashed_runs = [r for r in results if r < sim_days]
+            if crashed_runs:
+                avg_lifetime = sum(crashed_runs) / len(crashed_runs)
+                avg_lifetime_str = f"Day {avg_lifetime:.1f}"
+            else:
+                avg_lifetime_str = f"Survived >{sim_days} Days"
+                
+            st.metric(label="Asset Survival Probability", value=f"{survival_rate:.1f}%")
+            st.metric(label="Average Lifetime (Crashed Paths)", value=avg_lifetime_str)
             
             # Matplotlib histogram for the distribution curve
             fig, ax = plt.subplots()
-            ax.hist([sim_days]*mc_runs, bins=10, color='royalblue', edgecolor='black')
+            ax.hist(results, bins=15, range=(0, sim_days), color='royalblue', edgecolor='black')
             ax.set_xlabel("Re-entry Lifetime (Days)")
             ax.set_ylabel("Trial Frequency Count")
             st.pyplot(fig)

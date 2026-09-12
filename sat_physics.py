@@ -26,21 +26,44 @@ def altitude_from_tle(satellite) -> float:
 
 def calculate_atmospheric_density(altitude_km: float) -> float:
     """
-    Calculates atmospheric density (kg/m^3) using a simplified 
+    Calculates atmospheric density (kg/m^3) using a multi-layered 
     exponential scale height model for the thermosphere.
+    
+    Data Source: U.S. Standard Atmosphere, 1976 (NASA-TM-X-74335)
+    Tabular approximation derived from Vallado, "Fundamentals of Astrodynamics 
+    and Applications" (Table 8-4).
+    Reference: https://ntrs.nasa.gov/citations/19770009539
     """
-    # Reference values for Low Earth Orbit (approx. 300km - 500km baseline)
-    h0 = 300.0          # Reference altitude (km)
-    rho0 = 2.41e-11     # Nominal density at 300km (kg/m^3)
-    H = 53.2            # Scale height (km)
-    
-    # If the satellite drops below the thermosphere boundary, clamp it
-    if altitude_km < 120:
-        return 1.0e-9   # Extremely thick air near re-entry
+    # If the satellite drops below 100km, the atmosphere is extremely thick.
+    if altitude_km < 100:
+        return 5.297e-7 * math.exp(-(altitude_km - 100.0) / 5.877)
         
-    # The exponential decay formula: rho = rho0 * e^(-(h - h0) / H)
-    density = rho0 * math.exp(-(altitude_km - h0) / H)
+    # Layer definitions: (h_base [km], rho_base [kg/m^3], scale_height [km])
+    layers = [
+        (100.0, 5.297e-7,  5.877),
+        (120.0, 2.438e-8,  9.473),
+        (150.0, 2.070e-9,  22.22),
+        (200.0, 2.541e-10, 37.10),
+        (250.0, 6.073e-11, 45.54),
+        (300.0, 1.916e-11, 53.62),
+        (400.0, 2.803e-12, 65.51),
+        (500.0, 5.215e-13, 75.83),
+        (600.0, 1.137e-13, 91.56),
+        (700.0, 2.928e-14, 114.7),
+        (800.0, 9.387e-15, 137.6),
+        (900.0, 3.480e-15, 157.0),
+        (1000.0, 1.455e-15, 172.9)
+    ]
     
+    # Find the appropriate layer starting from the top down
+    h0, rho0, H = layers[0]
+    for i in range(len(layers) - 1, -1, -1):
+        if altitude_km >= layers[i][0]:
+            h0, rho0, H = layers[i]
+            break
+            
+    # The exponential decay formula for the localized layer
+    density = rho0 * math.exp(-(altitude_km - h0) / H)
     return density
 
 import math

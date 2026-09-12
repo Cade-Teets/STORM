@@ -15,7 +15,7 @@ class SolarForecaster:
         # Query data sorted chronologically
         # Add cutoff date to query if provided
         if cutoff_date:
-            query = "SELECT date, radio_flux FROM weather_history WHERE date >= ? ORDER BY date ASC"
+            query = "SELECT date, radio_flux FROM weather_history WHERE date <= ? ORDER BY date ASC"
             df = pd.read_sql_query(query, conn, params=(cutoff_date,)) 
         else:
             query = "SELECT date, radio_flux FROM weather_history ORDER BY date ASC"
@@ -26,6 +26,9 @@ class SolarForecaster:
         # Convert date column to datetime objects and set it as the index
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
+
+        # Drop duplicate dates in case multiple API ingestions overlapped
+        df = df[~df.index.duplicated(keep='last')]
 
         # Ensure regular daily frequency
         df = df.asfreq('D')

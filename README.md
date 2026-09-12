@@ -9,9 +9,9 @@ An end-to-end data pipeline and numerical physics simulation suite designed to p
 
 STORM bypasses generic static vacuum constraints by pulling live environmental telemetry from external tracking networks and running localized numerical integrations.
 
-1. **Automated Telemetry Ingestion Engine:** Connects directly via Space-Track API to pull satellite General Perturbations (GP) datasets and NOAA's space weather platforms to capture continuous daily solar flux index ($F_{10.7}$) timelines.
+1. **Automated Telemetry Ingestion Engine:** Connects directly via the Space-Track API to pull the latest satellite General Perturbations (GP) datasets (TLEs). Simultaneously, it ingests decades of historical daily solar flux index ($F_{10.7}$) records from CelesTrak's archives, ensuring statistical models are trained on chronologically accurate solar cycle data.
 2. **Predictive Time-Series Forecaster:** Trains an Auto Regressive Integrated Moving Average (ARIMA) time-series forcasting model using historic solar flux histories to project a 30-day space weather baseline, complete with a dynamically expanding standard error band representing atmospheric uncertainty.
-3. **Dynamic Deceleration Core ($a_D$):** Evaluates localized atmospheric density using an exponential altitude layer distribution and computes daily orbital kinetic energy drainage via the first-principles aerodynamic drag equation:
+3. **Dynamic Deceleration Core ($a_D$):** Bypasses the static constraints of SGP4's BSTAR parameter by calculating orbital decay using a true ballistic coefficient. Atmospheric density is evaluated dynamically via a **13-layer US Standard Atmosphere (1976)** piecewise exponential model. This properly scales scale-height ($H$) and air resistance as satellites plunge deep into the thermosphere (below 200km). Daily orbital kinetic energy drainage is then computed via the first-principles aerodynamic drag equation:
 
 $$a_D = -\frac{1}{2}\rho \left(\frac{C_D A}{m}\right) v^2$$
 
@@ -54,3 +54,10 @@ To run a full stochastic Monte Carlo decay analysis:
 python run_simulation.py --id 37820 --mode stochastic --days 60
 ```
 *(Note: To simulate a new asset, add its physical parameters to the `ASSET_DB` dictionary first).*
+
+### 3. Launching the Web Dashboard (Streamlit)
+To visualize the decay predictions and Monte Carlo confidence intervals via the interactive web UI, run:
+```bash
+streamlit run app.py
+```
+This will automatically open the Operations Control Dashboard in your default browser at `http://localhost:8501`.

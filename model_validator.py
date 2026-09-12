@@ -67,6 +67,7 @@ class StormValidator:
         print("\n" + "="*45)
         print("STORM MODEL VALIDATION REPORT")
         print("="*45)
+        print(f"Asset:                 {sat_name} (NORAD: {norad_id})")
         print(f"Target Known Re-entry: Day {known_reentry_day}")
         print(f"STORM Mean Prediction: Day {mean_prediction:.1f}")
         print(f"STORM 95% Interval:    [Day {lower_bound:.1f} - Day {upper_bound:.1f}]")

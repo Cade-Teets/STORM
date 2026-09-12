@@ -55,8 +55,8 @@ class NOAASpaceWeatherCollector:
         conn.close()
         logger.debug("Database initialized successfully.")
     def fetch_weather_history(self) -> str:
-        """Hits NOAA's server and brings back the raw string data block."""
-        full_url = "https://services.swpc.noaa.gov/text/daily-solar-indices.txt"
+        """Hits CelesTrak's server and brings back the complete historical CSV data block."""
+        full_url = "https://celestrak.org/SpaceData/SW-All.csv"
 
         time.sleep(1.0)
 
@@ -66,43 +66,48 @@ class NOAASpaceWeatherCollector:
             return response.text
 
         except Exception as e:
-            logger.error("Failed to return NOAA Daily Solar Indicies: {e}")
+            logger.error(f"Failed to return CelesTrak Space Weather Data: {e}")
             return ""
     
     def parse_weather_text(self, raw_txt: str) -> List[Dict[str, Any]]:
-        """Takes the raw data string block and processes it into a clean list of dictionaries."""
+        """Takes the raw CSV data string block and processes it into a clean list of dictionaries."""
         if not raw_txt:
             return []
         
         records = []
-
         raw_lines = raw_txt.splitlines()
 
-        for line in raw_lines:
-            # Filter out the header comments
-            if line.startswith('#') or line.startswith(':') or not line.strip():
+        for line in raw_lines[1:]:  # Skip the header row
+            if not line.strip() or line.startswith('DATE'):
                 continue
             
-            # Break string into an array by whitespace
-            parts = line.split()
+            parts = line.split(',')
 
-            # Safe structural mapping
+            if len(parts) < 25:
+                continue
+
             try:
+                date_str = parts[0]
+                f107_str = parts[24]  # F10.7_OBS is column 25
+                
+                if not f107_str:
+                    continue
+                    
                 solar_data = {
-                    "date": f"{parts[0]}-{parts[1]}-{parts[2]}",
-                    "radio_flux": int(parts[3]),
-                    "sunspot_num": int(parts[4]),
-                    "sunspot_area": int(parts[5]),
-                    "new_regions": int(parts[6]),
-                    "solar_mean_field": int(parts[7]),
-                    "xray_bkgd_flux": parts[8], 
-                    "c_flares": int(parts[9]),
-                    "m_flares": int(parts[10]),
-                    "x_flares": int(parts[11]),
-                    "optical_s_flares": int(parts[12]),
-                    "optical_1_flares": int(parts[13]),
-                    "optical_2_flares": int(parts[14]),
-                    "optical_3_flares": int(parts[15]),
+                    "date": date_str,
+                    "radio_flux": float(f107_str),
+                    "sunspot_num": int(parts[23]) if parts[23] else 0,
+                    "sunspot_area": 0,
+                    "new_regions": 0,
+                    "solar_mean_field": 0,
+                    "xray_bkgd_flux": "0", 
+                    "c_flares": 0,
+                    "m_flares": 0,
+                    "x_flares": 0,
+                    "optical_s_flares": 0,
+                    "optical_1_flares": 0,
+                    "optical_2_flares": 0,
+                    "optical_3_flares": 0,
                 }
                 records.append(solar_data)
             except (IndexError, ValueError) as parse_err:
