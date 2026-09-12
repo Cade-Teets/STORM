@@ -3,14 +3,14 @@
 Space-Track.org Historical TLE / GP Data Ingestion & Caching Engine
 
 This script handles secure authentication, API rate limiting, and persistent 
-local storage (SQLite) of historical satellite orbits. It is designed as 
-the data-engineering foundation (Phase 1) for a Space Force / Air Force 
-15A Operations Research portfolio project.
+local storage (SQLite) of historical satellite orbits. It acts as the core 
+Data Engineering and ETL foundation for the STORM predictive model, ensuring 
+high-fidelity time-series data for downstream Data Science tasks.
 
 Prerequisites (MacOS/Linux):
     python3 -m pip install -r requirements.txt
 Usage:
-    python space_track_collector.py --norad 25544 --db satellite_data.db
+    python space_track_api_collector.py --norad 25544 --db satellite_data.db
 """
 
 import os
@@ -21,16 +21,13 @@ import sqlite3
 import logging
 from typing import Dict, Any, List
 import requests
-import pandas as pd
 from dotenv import load_dotenv
-import datetime
-import time
 from pathlib import Path
 import json
 
 load_dotenv() # This automatically pulls the variables into the script
 
-# Configure structured logging to look like a professional military operational pipeline
+# Configure structured logging for the Data Engineering pipeline
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -250,60 +247,13 @@ class SpaceTrackCollector:
         return inserted_count
 
 
-# def check_local_cache(norad_id: int, db_path: str, start_date: str, end_date: str) -> bool:
-#     """Verifies if we already have sufficient historical data cached locally."""
-#     if not os.path.exists(db_path):
-#         return False
-        
-#     with sqlite3.connect(db_path) as conn:
-#         cursor = conn.cursor()
-#         if start_date and end_date is not None:
-#             cursor.execute("""
-#                 SELECT MIN(epoch), MAX(epoch), COUNT(*) 
-#                 FROM gp_history
-#                 WHERE norad_cat_id = ?
-#                     AND date(epoch) BETWEEN date(?) AND date(?)
-#             """, (norad_id, start_date, end_date))
-#         min_epoch, max_epoch, count = cursor.fetchone()
-    
-#     if not count:
-#         return False
-    
-#     requested_span_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
-#     covered_span_days = (pd.to_datetime(max_epoch) - pd.to_datetime(min_epoch)).days if min_epoch else 0
-
-#     if requested_span_days > 0 and covered_span_days >= requested_span_days * 0.9:
-#         logger.info(f"Cache Hit: {count} records covering {min_epoch} to {max_epoch} satisfy the window. Skipping API fetch.")
-#         return True
-    
-#     logger.info(f"Cache Miss: only {count} records covering {min_epoch} to {max_epoch}, insuficcient for {start_date} to {end_date}")
-    
-#     return False
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Space Force Portolio Ingestion: Space-Track ETL")
+    parser = argparse.ArgumentParser(description="STORM Data Pipeline: Space-Track ETL")
     parser.add_argument("--norad", type=int, default=25544, help="NORAD Catalog ID (default: 25544 - ISS)")
     parser.add_argument("--db", type=str, default="satellite_data.db", help="Path to local SQLite database")
     parser.add_argument("--limit", type=int, default=1000, help="Max records to pull from Space-Track API")
-    parser.add_argument("--since-days", type=int, default=1, help="Check for records created in the last N days")
 
     args = parser.parse_args()
-    
-    # If start and end data are not specified
-    # if not args.start_date or not args.end_date:
-    #     end = pd.Timestamp.now(datetime.timezone.utc).normalize()
-    #     start = end - pd.Timedelta(days=30)
-    #     args.start_date = args.start_date or start.strftime("%Y-%m-%d")
-    #     args.end_date = args.end_date or end.strftime("%Y-%m-%d")
-    #     logger.info(f"No explicit date range given, defaulting to {args.start_date} -> {args.end_date}")
-
-    # Check local cache first to protect API limits
-    # if check_local_cache(args.norad, args.db, args.start_date, args.end_date):
-    #     logger.info("Local caching operational. Pipeline ending cleanly.")
-    #     sys.exit(0)
-    
-    since_date = (pd.Timestamp.now(datetime.timezone.utc) - pd.Timedelta(days=args.since_days)).strftime("%Y-%m-%d")
 
     # Extract credentials
     username = os.getenv("SPACETRACK_USER")
@@ -326,7 +276,7 @@ def main():
     
     # Fetch and store TLE's
     try:
-        raw_records = collector.fetch_gp_history(norad_id=args.norad, since_date=since_date)
+        raw_records = collector.fetch_gp_history(norad_id=args.norad, limit=args.limit)
         new_insertions = collector.save_records_to_db(raw_records)
         
         # Verify success by loading a subset into Pandas

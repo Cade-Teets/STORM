@@ -1,4 +1,3 @@
-import sqlite3
 from sgp4.api import Satrec
 import math
 
@@ -111,68 +110,6 @@ def calculate_daily_altitude_drop(
 
     
 
-if __name__ == '__main__':
-    # Connect to DB
-    conn = sqlite3.connect('satellite_data.db')
-    cursor = conn.cursor()
 
-    sql_query = 'SELECT tle_line1, tle_line2 FROM gp_history ORDER BY epoch ASC LIMIT 1;'
-
-    # Query DB
-    output = cursor.execute(sql_query)
-    row = cursor.fetchone()
-    
-    if row:
-        tle_line1, tle_line2 = row
-        print("Sucessfully retrieved TLE lines.")
-    else:
-        print("DB is empty or query returned no results.")
-        tle_line1, tle_line2 = None, None
-
-    cursor.close()
-    conn.close()
-
-    # Parse TLE and extract (X,Y,Z) spatial coords
-    if tle_line1 and tle_line2:
-        satellite = Satrec.twoline2rv(tle_line1, tle_line2)
-
-    jd = satellite.jdsatepoch # type: ignore
-    fr = satellite.jdsatepochF # type: ignore
-
-    print(f"Target Julian Date: {jd}")
-    print(f"Target Fractional Day: {fr}")
-
-    # Run the orbital mechanics physics calculation
-    error_code, position, velocity = satellite.sgp4(jd, fr) # type: ignore
-
-    if error_code == 0:
-        print("X, Y, Z Coordinates (km):", position)
-        print("Vx, Vy, Vz Velocity (km/s):", velocity)
-    else:
-        print(f"SGP4 Propagation Error Code: {error_code}")
-
-    base_jd = satellite.jdsatepoch # type: ignore
-    base_fr = satellite.jdsatepochF # type: ignore
-
-    print("Starting 24 hr sim loop...")
-
-    # Loop for 1 day (1440 min)
-    for t in range(0, 1440):
-        # Update time step
-        time_step = t / 1440.0
-        current_fr = base_fr + time_step
-        
-        error_code, position, velocity = satellite.sgp4(base_jd, current_fr) # type: ignore
-        
-        if error_code == 0:
-            # Use radius to calculate altitude
-            altitude = calc_altitude(position)
-            atmospheric_density = calculate_atmospheric_density(altitude)
-            
-            # Print every 60 minutes so your terminal doesn't get flooded
-            if t % 60 == 0:
-                print(f"Minute {t:4d} | Current Altitude: {altitude:4.2f} km | Current Density: {atmospheric_density:.3e} kg/m^3")
-        else:
-            print(f"Error at minute {t}: Code {error_code}")
 
 

@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import plotly.express as px
 from run_simulation import OrbitalDecaySimulator
 
 # 1. Page Configuration
@@ -12,19 +11,27 @@ st.markdown("An Operations Research simulator evaluating thermospheric aerodynam
 # Initialize the backend simulator asset
 simulator = OrbitalDecaySimulator()
 
+from run_simulation import ASSET_DB
+
 # 2. Sidebar Controls
 st.sidebar.header("Simulation Parameters")
-target_id = st.sidebar.number_input("NORAD Catalog ID", value=25544, step=1)
-sim_days = st.sidebar.slider("Simulation Window (Days)", min_value=5, max_value=30, value=30)
+
+# Create a clean dropdown using the ASSET_DB dictionary
+asset_options = {f"{data['name']} (NORAD: {norad})": norad for norad, data in ASSET_DB.items()}
+selected_asset = st.sidebar.selectbox("Select Target Asset", options=list(asset_options.keys()))
+target_id = asset_options[selected_asset]
+
+sim_days = st.sidebar.slider("Simulation Window (Days)", min_value=5, max_value=60, value=30)
 mc_runs = st.sidebar.slider("Monte Carlo Iterations", min_value=10, max_value=500, value=100)
 
 # 3. Dynamic Name Fetching
 try:
     line1, line2, epoch, sat_name = simulator.get_latest_tle(target_id)
-    st.sidebar.success(f"Tracking Asset: **{sat_name}**")
+    st.sidebar.success(f"Telemetry Acquired: **{sat_name}**")
     st.sidebar.text(f"Initial Epoch: {epoch[:10]}")
 except Exception as e:
-    st.sidebar.error("NORAD ID missing from local database storage.")
+    st.sidebar.error(f"NORAD ID {target_id} missing from local database.")
+    st.sidebar.info(f"Run `python space_track_api_collector.py --norad {target_id}` to download.")
     st.stop()
 
 # 4. Trigger Execution

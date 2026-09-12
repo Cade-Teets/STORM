@@ -14,7 +14,17 @@ logger = logging.getLogger(__name__)
 # Centralized database of physical properties for target assets
 ASSET_DB = {
     25544: {"name": "ISS", "mass": 420000.0, "area": 2500.0, "cd": 2.2},
-    37820: {"name": "Tiangong-1", "mass": 8500.0, "area": 15.0, "cd": 2.2}
+    37820: {"name": "Tiangong-1", "mass": 8500.0, "area": 15.0, "cd": 2.2},
+    41765: {"name": "Tiangong-2", "mass": 8600.0, "area": 15.0, "cd": 2.2},
+    20638: {"name": "ROSAT", "mass": 2426.0, "area": 12.0, "cd": 2.2},
+    21701: {"name": "UARS", "mass": 5900.0, "area": 30.0, "cd": 2.2},
+    35243: {"name": "GOCE", "mass": 1050.0, "area": 1.0, "cd": 2.2},
+    15354: {"name": "ERBS", "mass": 2450.0, "area": 7.0, "cd": 2.2},
+    23560: {"name": "ERS-2", "mass": 2294.0, "area": 18.0, "cd": 2.2},
+    27370: {"name": "RHESSI", "mass": 293.0, "area": 2.0, "cd": 2.2},
+    40619: {"name": "Progress M-27M", "mass": 7290.0, "area": 10.0, "cd": 2.2},
+    37872: {"name": "Phobos-Grunt", "mass": 13200.0, "area": 9.0, "cd": 2.2},
+    25063: {"name": "TRMM", "mass": 3420.0, "area": 15.0, "cd": 2.2}
 }
 
 class OrbitalDecaySimulator:
@@ -157,8 +167,6 @@ class OrbitalDecaySimulator:
         line1, line2, epoch_str, object_name = self.get_latest_tle(norad_id)
         satellite = Satrec.twoline2rv(line1, line2)
 
-        original_bstar = satellite.bstar
-        culmulative_drag_effect = 0.0
         dynamic_density = 2.41e-11
         accumulated_altitude_loss = 0.0
 
